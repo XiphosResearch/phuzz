@@ -105,15 +105,11 @@ def parse_re(regex, data):
         for match in regex.finditer(data)]
 
 
-def scan_new_vars(phplog):
-    """Extract new variables from PHP log file"""
-    return [] if not phplog else set(filter(
-        None,
-        map(lambda M:
-            Var(*[M.groupdict().get(K)
-                  for K in [
-                      'name', 'key', 'value', 'file', 'line']]),
-            TRACEVAR_RE.finditer(phplog))))
+def calls_scan_vars(entries):
+    return set([
+        Var(entry.cls, entry.args[0], None, entry.file, entry.line)
+        for entry in entries
+        if entry.cls in PHP_GLOBALS])
 
 
 def hash_trace(entries):
@@ -145,6 +141,7 @@ class Tag(object):
 class Trace(object):
     def __init__(self, analyzer, resp, newvars, phplog, xdebug):
         self.analyzer = analyzer
+        self.newvars = newvars
         self.resp = resp
         self.phplog = phplog
         self.xdebug = xdebug
@@ -179,16 +176,16 @@ class Analyzer(object):
 
     def _collect(self, resp):
         phplog, xdebug = snap_file(self.ctx.phplog), snap_file(self.ctx.xdebug)
-        newvars = scan_new_vars(phplog)
         phplog = filter(lambda L: L.file != self.ctx.preload,
                         parse_re(ERRORLOG_RE, phplog))
         xdebug = filter(lambda L: L.file != self.ctx.preload,
                         parse_re(TRACELOG_RE, xdebug))
+        calls = find_function_calls(xdebug)
+        newvars = calls_scan_vars(calls)
+
         trace_hash = hash_trace(phplog), hash_trace(xdebug)
         trace = Trace(self, resp, newvars, phplog, xdebug)
-        self.traces[trace_hash].append(trace)
-        print('Function Calls', find_function_calls(xdebug))
-        print()
+        self.traces[trace_hash].append(trace)        
         return trace
 
     def trace(self, params=None):
@@ -200,7 +197,15 @@ class Analyzer(object):
     def run(self):
         new_states = True
         while new_states:
-            pass
+            trace = self.trace()
+            if len(trace.newvars):
+                varnames = [(entry.name, entry.key)
+                            for entry in trace.newvars]
+                print(varnames)
+                new_states = True
+            else:
+                new_states = False
+            break
 
 
 if __name__ == "__main__":
@@ -226,5 +231,5 @@ if __name__ == "__main__":
         for filename in php_files:
             url = "http://%s%s/%s" % (listen, ctx.path, filename)
             worker = Analyzer(ctx, interwebs, url)
-            worker.trace()
+            worker.run()
     proc.terminate()
