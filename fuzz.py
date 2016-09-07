@@ -155,11 +155,12 @@ foreach( get_loaded_extensions() AS $extn ) {
         cmd = ['php'] + ["-d %s=%s" % (K, V) for K, V in self.ini.items()]
         cmd += ['-S', ':'.join(self.listen), '-t', self.root] + args
         self.proc = subprocess.Popen(cmd)
-        for N in range(1, 3):
+        for N in range(1, 5):
             if try_connect(self.listen):
-                LOG.debug("Waiting for server...")
+                break
             if self.proc.poll() is not None:
                 raise RuntimeError("Could not start PHP with: ", ' '.join(cmd))
+            LOG.debug("Waiting for server...")
             time.sleep(0.5)
 
     def stop(self):
@@ -234,13 +235,18 @@ class Analyzer(object):
         if resp:
             return self._collect(resp)
 
+    def _scan_call(self, call, state):
+        if call.fun[0] in PHP_GLOBALS:
+            return
+        print("\t", '->'.join(call.fun), "(", call.args, ")")
+
     def _scan(self, state, trace, calls):
         loc = None
         for call in calls:
             if loc is None or loc.file != call.loc.file:
                 loc = call.loc
-                print(loc.file, ":")
-            print("   ", call.fun, "(", call.args, ")")
+                print(loc.file)
+            self._scan_call(call, state)
         print()
 
     def run_file(self, filepath):
