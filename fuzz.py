@@ -17,16 +17,8 @@ LOG = logging.getLogger(__name__)
 
 PHP_GLOBALS = ['_GET', '_POST', '_COOKIE', '_SERVER', '_REQUEST', '_FILES']
 
-RE_FILE_ON_LINE = '(\s+in\s+(?P<file>[^\s]+)\s+on\s+line\s+(?P<line>[0-9]+))'
-
-ERRORLOG_RE = re.compile('^\[[^\]]+\] PHP (?P<msg>.*?)' +
-                         RE_FILE_ON_LINE + '$', re.MULTILINE)
-
 TRACELOG_RE = re.compile('^\s+([0-9\.]+)'+'\s+([0-9]+)'+'\s+(?P<msg>.+?)\s+' +
                          '(?P<file>/[^:]+)'+':(?P<line>[0-9]+)$', re.MULTILINE)
-# Catch caustom warnings made by _PHPAUDFUZZ in _preload.php
-TRACEVAR_RE = re.compile('TRACE (GET|EXISTS) (?P<name>_[A-Z]+) (?P<key>.+?)' +
-                         '('+RE_FILE_ON_LINE+'|\'\) .*)?$', re.MULTILINE)
 # Parse function calls in xdebug trace log
 FUNCALL_RE = re.compile('^-> ((?P<cls>[^\-]+)->)?(?P<fnc>[^\s\(]+)' +
                         '\((?P<args>.*?)\)$')
@@ -37,10 +29,10 @@ CALLARGS_RE = re.compile('(?P<args>(^|\s*,\s*)?(' +
                          '))')
 
 
-FileLocation = namedtuple('FileLocation', ['file', 'line'])
+Loc = namedtuple('Loc', ['file', 'line'])
 LogMessage = namedtuple('LogMessage', ['msg', 'loc'])
 Var = namedtuple('Var', ['name', 'key', 'value', 'loc'])
-Funcall = namedtuple('Funcall', ['fun', 'args', 'loc'])
+Func = namedtuple('Func', ['fun', 'args', 'loc'])
 
 
 def unlink(*args):
@@ -68,10 +60,19 @@ def snapshot(*files):
     return ret
 
 
+def try_connect(listen):
+    try:
+        sock = socket.create_connection(listen, 1)
+        sock.close()
+        return True
+    except:
+        return False
+
+
 def parse_logs(regex, data):
     return [] if not data else [
         LogMessage(match.group('msg'),
-                   FileLocation(match.group('file'), match.group('line')))
+                   Loc(match.group('file'), match.group('line')))
         for match in regex.finditer(data)]
 
 
@@ -129,20 +130,12 @@ class PHPHarness(object):
             if mod not in mods:
                 raise RuntimeError("Error: php doesn't have the module:", mod)
 
-    def _connect(self):
-        try:
-            sock = socket.create_connection(self.listen, 1)
-            sock.close()
-            return True
-        except:
-            return False
-
     def start(self, args=[]):
         cmd = ['php'] + ["-d %s=%s" % (K, V) for K, V in self.ini.items()]
         cmd += ['-S', ':'.join(self.listen), '-t', self.root] + args
         self.proc = subprocess.Popen(cmd)
         for N in range(1, 3):
-            if self._connect():
+            if try_connect(self.listen):
                 LOG.debug("Waiting for server...")
             if self.proc.poll() is not None:
                 raise RuntimeError("Could not start PHP with: ", ' '.join(cmd))
@@ -180,7 +173,8 @@ class Trace(object):
                             data = row['str']
                         args.append(data)
                 data = match.groupdict()
-                func = Funcall(filter(None, [data['cls'], data['fnc']]), args, entry.loc)
+                fun = filter(None, [data['cls'], data['fnc']])
+                func = Func(fun, args, entry.loc)
                 out.append(func)
         return out
 
@@ -192,7 +186,7 @@ class Analyzer(object):
         interwebs = requests.Session()
         interwebs.max_redirects = 0
         interwebs.max_retries = 0
-        interwebs.danger_mode = True
+        interwebs.danger_mode = True  # Yay danger!
         self.interwebs = interwebs
 
     def _collect(self, resp):
@@ -213,7 +207,8 @@ class Analyzer(object):
 
     def run_file(self, filepath):
         webpath = filepath[len(self.php.root):]
-        url = "http://%s:%s%s" % (self.php.listen[0], str(self.php.listen[1]), webpath)
+        server = ':'.join([self.php.listen[0], str(self.php.listen[1])])
+        url = "http://%s%s" % (server, webpath)
         self.run(url)
 
     def run(self, url):
@@ -225,13 +220,11 @@ class Analyzer(object):
             print('Newvars', newvars)
             print('Calls', calls)
             print()
+            new_states = False
             if len(newvars):
                 varnames = [(entry.name, entry.key)
                             for entry in newvars]
-                new_states = True
-            else:
-                new_states = False
-            break
+                new_states = len(varnames) > 0
 
 
 if __name__ == "__main__":
@@ -247,9 +240,9 @@ if __name__ == "__main__":
 
     try:
         for path, dirs, files in os.walk(root):
-            php_files = filter(lambda X: os.path.splitext(X)[1] == '.php', files)
+            php_files = filter(lambda X: os.path.splitext(X)[1] == '.php',
+                               files)
             for filename in php_files:
-                # url = "http://%s%s/%s" % (listen, ctx.path, filename)
                 worker.run_file(os.path.join(path, filename))
     except:
         LOG.exception("FAIL...")
