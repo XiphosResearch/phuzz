@@ -9,9 +9,10 @@ import sys
 import logging
 import hashlib
 import socket
+from random import randint
+from base64 import b32encode
 from tempfile import mkstemp
 from collections import namedtuple, defaultdict
-from random import randint
 
 LOG = logging.getLogger(__name__)
 
@@ -94,6 +95,7 @@ def hash_trace(entries):
 class PHPHarness(object):
     def __init__(self, listen, root, preload=None, ini={}):
         self._check()
+        self.builtins = self._builtins()
         self.proc = None
         self.listen = listen
         self.root = root
@@ -122,6 +124,25 @@ class PHPHarness(object):
         }
         ini.update(extra)
         return ini
+
+    def _builtins(self):
+        allfuncs_php = """
+<?php
+echo implode("\n", get_declared_classes())."\n";
+foreach( get_loaded_extensions() AS $extn ) {
+    $funcs = get_extension_funcs($extn);
+    if( ! $funcs ) continue;
+    foreach( get_extension_funcs($extn) AS $fun ) {
+        if( $fun ) {
+            echo "$fun\n";
+        }
+    }
+}
+"""
+        proc = subprocess.Popen(['php', '/dev/stdin'], bufsize=1,
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        stdout = proc.communicate(input=allfuncs_php)[0]
+        return stdout.split()
 
     def _check(self):
         mods_needed = ['Xdebug']
@@ -199,11 +220,28 @@ class Analyzer(object):
         self.traces[trace_hash].append(trace)
         return trace
 
-    def trace(self, url, params=None):
+    def trace(self, url, state=None):
         # TODO: handle POST, cookies, files etc.
-        LOG.debug('Retrieving %r', url)
-        resp = self.interwebs.get(url, params=params, allow_redirects=False)
-        return self._collect(resp)
+        if state is None:
+            state = defaultdict(dict)
+        if '_POST' not in state and '_FILES' not in state:
+            LOG.debug('Retrieving %r', url)
+            resp = self.interwebs.get(url, params=state['_GET'],
+                                      allow_redirects=False)
+        else:
+            resp = None
+            print('Requires POST, skipping!')
+        if resp:
+            return self._collect(resp)
+
+    def _scan(self, state, trace, calls):
+        loc = None
+        for call in calls:
+            if loc is None or loc.file != call.loc.file:
+                loc = call.loc
+                print(loc.file, ":")
+            print("   ", call.fun, "(", call.args, ")")
+        print()
 
     def run_file(self, filepath):
         webpath = filepath[len(self.php.root):]
@@ -211,26 +249,32 @@ class Analyzer(object):
         url = "http://%s%s" % (server, webpath)
         self.run(url)
 
-    def run(self, url):
+    def run(self, url, state=None):
+        if state is None:
+            state = defaultdict(dict)
         new_states = True
         while new_states:
-            trace = self.trace(url)
-            calls = trace.calls()
-            newvars = calls_scan_vars(calls)
-            print('Newvars', newvars)
-            print('Calls', calls)
-            print()
             new_states = False
-            if len(newvars):
-                varnames = [(entry.name, entry.key)
-                            for entry in newvars]
-                new_states = len(varnames) > 0
+            trace = self.trace(url, state)
+            if not trace:
+                continue
+            calls = trace.calls()
+            input_vars = calls_scan_vars(calls)
+            if len(input_vars):
+                newvars = set([(entry.name, entry.key)
+                               for entry in input_vars
+                               if entry.name not in state
+                               or entry.key not in state[entry.name]])
+                for K, V in newvars:
+                    state[K][V] = b32encode(os.urandom(randint(1, 4) * 5))
+                new_states = len(newvars) > 0
+            self._scan(state, trace, calls)
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING)
     port = randint(8192, 50000)
-    root = os.getcwd()
+    root = os.getcwd() + '/tests'
     self_file = os.path.abspath(sys.modules['__main__'].__file__)
     preload = os.path.join(os.path.dirname(self_file), '_preload.php')
 
