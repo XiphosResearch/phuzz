@@ -1,13 +1,7 @@
-# PHP Audit Fuzz
+# PHP Phuzzer
 
-Feedback from xdebug and PHP error logs is used to generate random and arbitrary input
-parameters to a PHP script, the functions which this data passes through collected from
-runtime traces and triggers warnings if it gains control over exploitable functions, e.g. 
-
-  * system
-  * readfile
-  * include
-  * fopen
+It uses feedback from xdebug to generate random and arbitrary input
+parameters to a PHP script and find code paths which lead to exploitation:
 
 ## TODO:
 
