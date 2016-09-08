@@ -25,15 +25,32 @@ FUNCALL_RE = re.compile('^-> ((?P<cls>[^\-]+)->)?(?P<fnc>[^\s\(]+)' +
                         '\((?P<args>.*?)\)$')
 # Separate agruments to functions, from xdebug trace log
 CALLARGS_RE = re.compile('(?P<args>(^|\s*,\s*)?(' +
-                         '\'(?P<str>(\\.|[^\']+)*)\'' +
-                         '|(?P<val>[^,\)]+)' +
-                         '))')
+                         '(?P<str>' + 
+                            '(?P<quo>[\'"])' +
+                                '(?P<val>(\\.|[^\']+)*)' + 
+                            '(?P=quo)' +
+                            '|[^,\)]+' +
+                         ')))')
+SYSLOG_RE = re.compile(
+    #recvfrom(6<socket:[123]>, 0x7ff, 16383, 0, NULL, NULL) = -1 ENOSYS (Fun...
+    '^(\[[^\]]*\]\s+)?'
+    '(?P<fun>[^\(]+)'
+    '\((?P<args>.*?)\)'
+    '\s*=\s*(?P<ret>[^\'" ]+)(\s+[^\'"]+)?$'
+    #'^(?P<args>.*?)$'
+)
 
 
 Loc = namedtuple('Loc', ['file', 'line'])
 LogMessage = namedtuple('LogMessage', ['msg', 'loc'])
 Var = namedtuple('Var', ['name', 'key', 'value', 'loc'])
 Func = namedtuple('Func', ['fun', 'args', 'loc'])
+
+
+def unescape_str(data):
+    if data[0] in ["'", '"']:
+        return data[1:-1].decode('string_escape')
+    return data
 
 
 def unlink(*args):
@@ -51,7 +68,7 @@ def snapshot(*files):
         data = None
         try:
             if os.path.exists(file):
-                with open(file, "r") as fh:
+                with open(file, "rw") as fh:
                     data = fh.read()
                     fh.truncate(0)
         except:
@@ -76,10 +93,28 @@ def parse_logs(regex, data):
                    Loc(match.group('file'), match.group('line')))
         for match in regex.finditer(data)]
 
+def parse_syslog(data, ignore_files=None):
+    ret = []
+    for entry in data.split("\n"):
+        match = SYSLOG_RE.match(entry)
+        if match:
+            mdat = match.groupdict()
+            ignored = False
+            for filename in ignore_files:
+                if filename in mdat['args']:
+                    ignored = True
+            if not ignored:
+                ret.append(
+                    Func(
+                        [mdat['fun']],
+                        mdat['args'],
+                        None))
+    return ret
+
 
 def calls_scan_vars(entries):
     return set([
-        Var(entry.fun[0], entry.args[0], None, entry.loc)
+        Var(entry.fun[0], unescape_str(entry.args[0]), None, entry.loc)
         for entry in entries
         if len(entry.fun) == 2 and entry.fun[0] in PHP_GLOBALS])
 
@@ -92,6 +127,34 @@ def hash_trace(entries):
     return md5.hexdigest()
 
 
+class SyscallTracer(object):
+    def __init__(self, target):
+        self.target = target
+        self.proc = None
+        self.logfile = mkstemp('strace')[1]
+        self.logfh = None
+
+    def begin(self):
+        self.finish()
+        # On Linux, this only works if you do:
+        #    echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
+        cmd = [#'sudo', '-n',
+               'strace', '-qyf', '-s', '4096', '-p', str(self.target.pid)]
+        self.logfh = open(self.logfile, "w")
+        self.proc = subprocess.Popen(cmd, universal_newlines=True,
+                                     stderr=self.logfh)
+        if self.proc.poll() is not None:
+            raise RuntimeError("Could not strace: " + str(cmd))
+
+    def finish(self):
+        if self.proc:
+            subprocess.Popen([#'sudo', '-n',
+                              'kill', '-9', str(self.proc.pid)])
+            self.proc.wait()
+            self.proc = None
+            return snapshot(self.logfile)[0]
+
+
 class PHPHarness(object):
     def __init__(self, listen, root, preload=None, ini={}):
         self._check()
@@ -100,7 +163,9 @@ class PHPHarness(object):
         self.listen = listen
         self.root = root
         self.preload = preload
+        self.strace = None
         self.xdebug_path = mkstemp('.xdebug')[1]
+        self.logs = [self.xdebug_path + '.xt']
         if preload:
             ini["auto_prepend_file"] = preload
         self.ini = self._config(ini)
@@ -162,18 +227,49 @@ foreach( get_loaded_extensions() AS $extn ) {
                 raise RuntimeError("Could not start PHP with: ", ' '.join(cmd))
             LOG.debug("Waiting for server...")
             time.sleep(0.5)
+        self.strace = SyscallTracer(self.proc)
 
     def stop(self):
         if self.proc:
             self.proc.terminate()
-            unlink(self.xdebug_path + '.xt')
+        if self.strace:
+            self.strace.finish()
+            self.strace = None
+        unlink(*self.logs)
+
+    def trace_begin(self):
+        assert self.proc is not None
+        assert self.strace is not None
+        for logfile in self.logs:
+            if os.path.exists(logfile):
+                with open(logfile, "w") as fh:
+                    fh.truncate(0)
+                unlink(logfile)
+        self.strace.begin()
+
+    def trace_finish(self):
+        logdata = []
+        for logfile in self.logs:
+            data = None
+            if os.path.exists(logfile):
+                try:
+                    with open(logfile, "r") as fh:
+                        data = fh.read()
+                except Exception as ex:
+                    pass
+            logdata.append(data)
+        strace_out = self.strace.finish()        
+        logdata.append(strace_out)
+        return logdata
+
 
 
 class Trace(object):
-    def __init__(self, analyzer, resp, xdebug):
+    def __init__(self, analyzer, resp, xdebug, syslog):
         self.analyzer = analyzer
         self.resp = resp
         self.xdebug = xdebug
+        self.syslog = syslog
         self.tags = None
         # varnames = set([(var.name, var.key) for var in newvars])
 
@@ -186,14 +282,8 @@ class Trace(object):
                 args = []
                 for arg in CALLARGS_RE.finditer(match.group('args')):
                     row = arg.groupdict()
-                    if row['val']:
-                        args.append(row['val'])  # verbatim
-                    else:
-                        try:
-                            data = row['str'].decode('string_escape')
-                        except:
-                            data = row['str']
-                        args.append(data)
+                    val = row['str'] if 'str' in row else row['val']
+                    args.append(val)
                 data = match.groupdict()
                 fun = filter(None, [data['cls'], data['fnc']])
                 func = Func(fun, args, entry.loc)
@@ -212,11 +302,14 @@ class Analyzer(object):
         self.interwebs = interwebs
 
     def _collect(self, resp):
-        xdebug = snapshot(self.php.xdebug_path + '.xt')[0]
+        xdebug, strace = self.php.trace_finish()
         xdebug = filter(lambda L: L.loc.file != self.php.preload,
                         parse_logs(TRACELOG_RE, xdebug))
+        #for entry in strace.split("\n"):
+        #            print(entry)
+        ignore_files = [self.php.preload, '2</dev/pts'] + self.php.logs
         trace_hash = hash_trace(xdebug)
-        trace = Trace(self, resp, xdebug)
+        trace = Trace(self, resp, xdebug, parse_syslog(strace, ignore_files))
 
         self.traces[trace_hash].append(trace)
         return trace
@@ -227,6 +320,7 @@ class Analyzer(object):
             state = defaultdict(dict)
         if '_POST' not in state and '_FILES' not in state:
             LOG.debug('Retrieving %r', url)
+            self.php.trace_begin()
             resp = self.interwebs.get(url, params=state['_GET'],
                                       allow_redirects=False)
         else:
@@ -238,15 +332,32 @@ class Analyzer(object):
     def _scan_call(self, call, state):
         if call.fun[0] in PHP_GLOBALS:
             return
-        print("\t", '->'.join(call.fun), "(", call.args, ")")
+        show = False
+        for K, S in state.items():
+            for SK, SV in S.items():  
+                args = call.args if isinstance(call.args, list) else [call.args]
+                for arg_val in args:
+                    if SV in arg_val:
+                        return ' '.join(["\t", '->'.join(call.fun), "(", ', '.join(args), ")"])
 
-    def _scan(self, state, trace, calls):
+    def _scan(self, state, trace, phpcalls, syscalls):
         loc = None
-        for call in calls:
-            if loc is None or loc.file != call.loc.file:
-                loc = call.loc
-                print(loc.file)
-            self._scan_call(call, state)
+        php_highlights = []
+        for call in phpcalls:
+            res = self._scan_call(call, state)
+            if res:
+                if loc is None or loc.file != call.loc.file:
+                    loc = call.loc
+                    php_highlights.append(loc.file)
+                php_highlights.append(res)
+        php_highlights = filter(None, php_highlights)
+        sys_calls = filter(None, [self._scan_call(call, state)
+                                  for call in syscalls])
+        if len(php_highlights):
+            print("\n".join(php_highlights))
+        if len(sys_calls):
+            print("\nsyscalls:")
+            print("\n".join(sys_calls))
         print()
 
     def run_file(self, filepath):
@@ -264,8 +375,8 @@ class Analyzer(object):
             trace = self.trace(url, state)
             if not trace:
                 continue
-            calls = trace.calls()
-            input_vars = calls_scan_vars(calls)
+            phpcalls = trace.calls()
+            input_vars = calls_scan_vars(phpcalls)
             if len(input_vars):
                 newvars = set([(entry.name, entry.key)
                                for entry in input_vars
@@ -274,7 +385,7 @@ class Analyzer(object):
                 for K, V in newvars:
                     state[K][V] = b32encode(os.urandom(randint(1, 4) * 5))
                 new_states = len(newvars) > 0
-            self._scan(state, trace, calls)
+            self._scan(state, trace, phpcalls, trace.syslog)
 
 
 if __name__ == "__main__":
