@@ -6,9 +6,9 @@ parameters to a PHP script and find code paths which lead to exploitation.
 
 ## Running
 
-### Linux / Ubuntu
+### Debian / Ubuntu
 
-	sudo apt-get install php56-cli php56-xdebug
+	sudo apt-get install php5.6-cli php-xdebug
 	pip install requests
 	./phuzz.py
 

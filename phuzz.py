@@ -122,7 +122,7 @@ class SyscallTracer(object):
 
     def begin(self):
         self.finish()
-        cmd = ['strace', '-qyf', '-s', '4096', '-p', str(self.target.pid)]
+        cmd = ['strace', '-qyfy', '-s', '4096', '-p', str(self.target.pid)]
         self.logfh = open(self.logfile, "w")
         self.proc = subprocess.Popen(cmd, universal_newlines=True,
                                      stderr=self.logfh)
@@ -257,16 +257,27 @@ class Analyzer(object):
         # TODO: handle POST, cookies, files etc.
         if state is None:
             state = defaultdict(dict)
+        params = state['_REQUEST']
+        params.update(state['_GET'])
+        LOG.debug('Retrieving %r', url)
+        self.php.trace_begin()
         if '_POST' not in state and '_FILES' not in state:
-            LOG.debug('Retrieving %r', url)
-            self.php.trace_begin()
-            resp = self.interwebs.get(url, params=state['_GET'],
+            resp = self.interwebs.get(url, params=params,
+                                      cookies=state['_COOKIE'],
                                       allow_redirects=False)
         else:
-            resp = None
-            print('Requires POST, skipping!')
+            if '_FILES' not in state:
+                resp = self.interwebs.post(url, params=params, 
+                                           data=state['_POST'],
+                                           cookies=state['_COOKIE'],
+                                           allow_redirects=False)
+            else:
+                print('Requires _FILES, skipping!')
+                resp = None
         if resp:
             return self._collect(resp)
+        else:
+            self.php.trace_finish()
 
     def _scan_call(self, call, state):
         if call.fun[0] in PHP_GLOBALS:
@@ -348,7 +359,7 @@ if __name__ == "__main__":
     try:
         for path, dirs, files in os.walk(root):
             php_files = filter(lambda X: os.path.splitext(X)[1] == '.php',
-                               files)
+                               sorted(files))
             for filename in php_files:
                 worker.run_file(os.path.join(path, filename))
     except:

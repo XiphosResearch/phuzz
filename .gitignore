@@ -1,2 +1,3 @@
 *.xt
 /tests/x/
+/tests/*/*
