@@ -7,7 +7,6 @@ import re
 import os
 import sys
 import logging
-import hashlib
 import socket
 from random import randint
 from base64 import b32encode
@@ -24,21 +23,12 @@ TRACELOG_RE = re.compile('^\s+([0-9\.]+)'+'\s+([0-9]+)'+'\s+(?P<msg>.+?)\s+' +
 FUNCALL_RE = re.compile('^-> ((?P<cls>[^\-]+)->)?(?P<fnc>[^\s\(]+)' +
                         '\((?P<args>.*?)\)$')
 # Separate agruments to functions, from xdebug trace log
-CALLARGS_RE = re.compile('(?P<args>(^|\s*,\s*)?(' +
-                         '(?P<str>' + 
-                            '(?P<quo>[\'"])' +
-                                '(?P<val>(\\.|[^\']+)*)' + 
-                            '(?P=quo)' +
-                            '|[^,\)]+' +
-                         ')))')
+CALLARGS_RE = re.compile('(?P<args>(^|\s*,\s*)?(' + '(?P<str>' +
+                         '(?P<quo>[\'"])' + '(?P<val>(\\.|[^\']+)*)' +
+                         '(?P=quo)' + '|[^,\)]+' + ')))')
 SYSLOG_RE = re.compile(
-    #recvfrom(6<socket:[123]>, 0x7ff, 16383, 0, NULL, NULL) = -1 ENOSYS (Fun...
-    '^(\[[^\]]*\]\s+)?'
-    '(?P<fun>[^\(]+)'
-    '\((?P<args>.*?)\)'
-    '\s*=\s*(?P<ret>[^\'" ]+)(\s+[^\'"]+)?$'
-    #'^(?P<args>.*?)$'
-)
+    '^(\[[^\]]*\]\s+)?' + '(?P<fun>[^\(]+)' + '\((?P<args>.*?)\)' +
+    '\s*=\s*(?P<ret>[^\'" ]+)(\s+[^\'"]+)?$')
 
 
 Loc = namedtuple('Loc', ['file', 'line'])
@@ -47,7 +37,7 @@ Var = namedtuple('Var', ['name', 'key', 'value', 'loc'])
 Func = namedtuple('Func', ['fun', 'args', 'loc'])
 
 
-def unescape_str(data):
+def unescape(data):
     if data[0] in ["'", '"']:
         return data[1:-1].decode('string_escape')
     return data
@@ -93,38 +83,23 @@ def parse_logs(regex, data):
                    Loc(match.group('file'), match.group('line')))
         for match in regex.finditer(data)]
 
+
 def parse_syslog(data, ignore_files=None):
     ret = []
     for entry in data.split("\n"):
         match = SYSLOG_RE.match(entry)
         if match:
             mdat = match.groupdict()
-            ignored = False
-            for filename in ignore_files:
-                if filename in mdat['args']:
-                    ignored = True
-            if not ignored:
-                ret.append(
-                    Func(
-                        [mdat['fun']],
-                        mdat['args'],
-                        None))
+            if any([X in mdat['args'] for X in ignore_files]):
+                ret.append(Func([mdat['fun']], mdat['args'], None))
     return ret
 
 
 def calls_scan_vars(entries):
     return set([
-        Var(entry.fun[0], unescape_str(entry.args[0]), None, entry.loc)
+        Var(entry.fun[0], unescape(entry.args[0]), None, entry.loc)
         for entry in entries
         if len(entry.fun) == 2 and entry.fun[0] in PHP_GLOBALS])
-
-
-def hash_trace(entries):
-    md5 = hashlib.md5()
-    for entry in entries:
-        md5.update(str(entry.loc))
-        md5.update(md5.digest())
-    return md5.hexdigest()
 
 
 class SyscallTracer(object):
@@ -138,8 +113,7 @@ class SyscallTracer(object):
         self.finish()
         # On Linux, this only works if you do:
         #    echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
-        cmd = [#'sudo', '-n',
-               'strace', '-qyf', '-s', '4096', '-p', str(self.target.pid)]
+        cmd = ['strace', '-qyf', '-s', '4096', '-p', str(self.target.pid)]
         self.logfh = open(self.logfile, "w")
         self.proc = subprocess.Popen(cmd, universal_newlines=True,
                                      stderr=self.logfh)
@@ -148,8 +122,7 @@ class SyscallTracer(object):
 
     def finish(self):
         if self.proc:
-            subprocess.Popen([#'sudo', '-n',
-                              'kill', '-9', str(self.proc.pid)])
+            subprocess.Popen(['kill', '-9', str(self.proc.pid)])
             self.proc.wait()
             self.proc = None
             return snapshot(self.logfile)[0]
@@ -157,8 +130,7 @@ class SyscallTracer(object):
 
 class PHPHarness(object):
     def __init__(self, listen, root, preload=None, ini={}):
-        self._check()
-        self.builtins = self._builtins()
+        self._check_php_modules()
         self.proc = None
         self.listen = listen
         self.root = root
@@ -179,10 +151,10 @@ class PHPHarness(object):
             'display_errors': 0,
             'error_reporting': 32767,  # E_ALL
             'xdebug.auto_trace': 1,
-            'xdebug.collect_assignments': 1,
+            # 'xdebug.collect_assignments': 1,
             'xdebug.collect_params': 3,
-            'xdebug.collect_return': 1,
-            'xdebug.collect_vars': 1,
+            # 'xdebug.collect_return': 1,
+            # 'xdebug.collect_vars': 1,
             'xdebug.trace_format': 0,
             'xdebug.trace_output_name': self.xdebug_path,
             'xdebug.trace_output_dir': '/',
@@ -190,26 +162,7 @@ class PHPHarness(object):
         ini.update(extra)
         return ini
 
-    def _builtins(self):
-        allfuncs_php = """
-<?php
-echo implode("\n", get_declared_classes())."\n";
-foreach( get_loaded_extensions() AS $extn ) {
-    $funcs = get_extension_funcs($extn);
-    if( ! $funcs ) continue;
-    foreach( get_extension_funcs($extn) AS $fun ) {
-        if( $fun ) {
-            echo "$fun\n";
-        }
-    }
-}
-"""
-        proc = subprocess.Popen(['php', '/dev/stdin'], bufsize=1,
-                                stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-        stdout = proc.communicate(input=allfuncs_php)[0]
-        return stdout.split()
-
-    def _check(self):
+    def _check_php_modules(self):
         mods_needed = ['Xdebug']
         mods = subprocess.check_output(["php", "-m"]).split("\n")
         for mod in mods_needed:
@@ -238,30 +191,14 @@ foreach( get_loaded_extensions() AS $extn ) {
         unlink(*self.logs)
 
     def trace_begin(self):
-        assert self.proc is not None
-        assert self.strace is not None
-        for logfile in self.logs:
-            if os.path.exists(logfile):
-                with open(logfile, "w") as fh:
-                    fh.truncate(0)
-                unlink(logfile)
+        snapshot(*self.logs)
         self.strace.begin()
 
     def trace_finish(self):
-        logdata = []
-        for logfile in self.logs:
-            data = None
-            if os.path.exists(logfile):
-                try:
-                    with open(logfile, "r") as fh:
-                        data = fh.read()
-                except Exception as ex:
-                    pass
-            logdata.append(data)
-        strace_out = self.strace.finish()        
+        logdata = snapshot(*self.logs)
+        strace_out = self.strace.finish()
         logdata.append(strace_out)
         return logdata
-
 
 
 class Trace(object):
@@ -294,7 +231,6 @@ class Trace(object):
 class Analyzer(object):
     def __init__(self, php):
         self.php = php
-        self.traces = defaultdict(list)
         interwebs = requests.Session()
         interwebs.max_redirects = 0
         interwebs.max_retries = 0
@@ -305,14 +241,8 @@ class Analyzer(object):
         xdebug, strace = self.php.trace_finish()
         xdebug = filter(lambda L: L.loc.file != self.php.preload,
                         parse_logs(TRACELOG_RE, xdebug))
-        #for entry in strace.split("\n"):
-        #            print(entry)
         ignore_files = [self.php.preload, '2</dev/pts'] + self.php.logs
-        trace_hash = hash_trace(xdebug)
-        trace = Trace(self, resp, xdebug, parse_syslog(strace, ignore_files))
-
-        self.traces[trace_hash].append(trace)
-        return trace
+        return Trace(self, resp, xdebug, parse_syslog(strace, ignore_files))
 
     def trace(self, url, state=None):
         # TODO: handle POST, cookies, files etc.
@@ -332,13 +262,16 @@ class Analyzer(object):
     def _scan_call(self, call, state):
         if call.fun[0] in PHP_GLOBALS:
             return
-        show = False
         for K, S in state.items():
-            for SK, SV in S.items():  
-                args = call.args if isinstance(call.args, list) else [call.args]
+            for SK, SV in S.items():
+                args = call.args
+                if isinstance(call.args, list):
+                    args = [call.args]
                 for arg_val in args:
                     if SV in arg_val:
-                        return ' '.join(["\t", '->'.join(call.fun), "(", ', '.join(args), ")"])
+                        return ' '.join([
+                            "\t", '->'.join(call.fun),
+                            "(", ', '.join(args), ")"])
 
     def _scan(self, state, trace, phpcalls, syscalls):
         loc = None
@@ -358,7 +291,6 @@ class Analyzer(object):
         if len(sys_calls):
             print("\nsyscalls:")
             print("\n".join(sys_calls))
-        print()
 
     def run_file(self, filepath):
         webpath = filepath[len(self.php.root):]
@@ -374,7 +306,7 @@ class Analyzer(object):
             new_states = False
             trace = self.trace(url, state)
             if not trace:
-                continue
+                break
             phpcalls = trace.calls()
             input_vars = calls_scan_vars(phpcalls)
             if len(input_vars):
@@ -390,6 +322,7 @@ class Analyzer(object):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING)
+
     port = randint(8192, 50000)
     root = os.getcwd() + '/tests'
     self_file = os.path.abspath(sys.modules['__main__'].__file__)
@@ -397,8 +330,8 @@ if __name__ == "__main__":
 
     server = PHPHarness(('127.0.0.1', str(port)), root, preload)
     server.start()
-    worker = Analyzer(server)
 
+    worker = Analyzer(server)
     try:
         for path, dirs, files in os.walk(root):
             php_files = filter(lambda X: os.path.splitext(X)[1] == '.php',
