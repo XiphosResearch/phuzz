@@ -57,7 +57,7 @@ def snapshot(*files):
         data = None
         try:
             if os.path.exists(filename):
-                with open(filename, "w") as fh:
+                with open(filename, "r+") as fh:
                     data = fh.read()
                     fh.truncate(0)
         except:
@@ -85,6 +85,8 @@ def parse_logs(regex, data):
 
 def parse_syslog(data, ignore_files=None):
     ret = []
+    if not data:
+        return ret
     for entry in data.split("\n"):
         match = SYSLOG_RE.match(entry)
         if match:
@@ -178,7 +180,9 @@ class PHPHarness(object):
             if mod not in mods:
                 raise RuntimeError("Error: php doesn't have the module:", mod)
 
-    def start(self, args=[]):
+    def start(self, args=None):
+        if args is None:
+            args = []
         cmd = ['php'] + ["-d %s=%s" % (K, V) for K, V in self.ini.items()]
         cmd += ['-S', ':'.join(self.listen), '-t', self.root] + args
         self.proc = subprocess.Popen(cmd)
@@ -282,18 +286,18 @@ class Analyzer(object):
     def _scan_call(self, call, state):
         if call.fun[0] in PHP_GLOBALS:
             return
-        for K, S in state.items():
-            for SK, SV in S.items():
+        for val in state.values():
+            for subval in val.values():
                 args = call.args
                 if not isinstance(args, list):
                     args = [args]
                 for arg_val in args:
-                    if SV in arg_val:
+                    if subval in arg_val:
                         return ' '.join([
                             "\t", '->'.join(call.fun),
                             "(", ', '.join(args), ")"])
 
-    def _scan(self, state, trace, phpcalls, syscalls):
+    def _scan(self, state, phpcalls, syscalls):
         loc = None
         php_highlights = []
         for call in phpcalls:
@@ -338,7 +342,7 @@ class Analyzer(object):
                                for entry in input_vars
                                if entry.name not in state
                                or entry.key not in state[entry.name]])
-                for K, V in newvars:
-                    state[K][V] = b32encode(os.urandom(randint(1, 4) * 5))
+                for key, val in newvars:
+                    state[key][val] = b32encode(os.urandom(randint(1, 4) * 5))
                 new_states = len(newvars) > 0
-            self._scan(state, trace, phpcalls, trace.syslog)
+            self._scan(state, phpcalls, trace.syslog)

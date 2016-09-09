@@ -11,7 +11,7 @@ LOG = logging.getLogger(__name__)
 def main(options):
     logging.basicConfig(level=options.loglevel)
     port = options.port
-    root = os.getcwd() + '/tests'
+    root = os.getcwd()
     self_file = os.path.abspath(sys.modules['__main__'].__file__)
     preload = os.path.join(os.path.dirname(self_file), '_preload.php')
     ret = 0
@@ -20,13 +20,20 @@ def main(options):
     server.start()
 
     worker = Analyzer(server)
+    stop = False
     try:
-        for path, dirs, files in os.walk(root):
+        for path, _, files in os.walk(root):
             php_files = filter(lambda X: os.path.splitext(X)[1] == '.php',
                                sorted(files))
             for filename in php_files:
-                worker.run_file(os.path.join(path, filename))
-    except:
+                try:
+                    worker.run_file(os.path.join(path, filename))
+                except KeyboardInterrupt:
+                    stop = True
+                    break
+            if stop:
+                break
+    except Exception:
         ret = 1
         LOG.exception("FAIL...")
 
@@ -56,4 +63,4 @@ def _parse_options():
 
 
 if __name__ == "__main__":
-    sys.exit(main(self._parse_options()))
+    sys.exit(main(_parse_options()))
