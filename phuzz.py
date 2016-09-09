@@ -90,7 +90,8 @@ def parse_syslog(data, ignore_files=None):
         match = SYSLOG_RE.match(entry)
         if match:
             mdat = match.groupdict()
-            if any([X in mdat['args'] for X in ignore_files]):
+            ignored = [X in mdat['args'] for X in ignore_files]
+            if not any(ignored):
                 ret.append(Func([mdat['fun']], mdat['args'], None))
     return ret
 
@@ -108,11 +109,19 @@ class SyscallTracer(object):
         self.proc = None
         self.logfile = mkstemp('strace')[1]
         self.logfh = None
+        self._setup()
+
+    def _setup(self):
+        yama_ptrace_scope = '/proc/sys/kernel/yama/ptrace_scope'
+        if os.getuid() != 0 and os.path.exists(yama_ptrace_scope):
+            with open(yama_ptrace_scope, 'r') as fh:
+                if fh.read() != "0\n":
+                    print("On Linux, this only works after:")
+                    print("  echo 0 | sudo tee " + yama_ptrace_scope)
+                    raise RuntimeError(yama_ptrace_scope + " must be 0")
 
     def begin(self):
         self.finish()
-        # On Linux, this only works if you do:
-        #    echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
         cmd = ['strace', '-qyf', '-s', '4096', '-p', str(self.target.pid)]
         self.logfh = open(self.logfile, "w")
         self.proc = subprocess.Popen(cmd, universal_newlines=True,
@@ -151,8 +160,8 @@ class PHPHarness(object):
             'display_errors': 0,
             'error_reporting': 32767,  # E_ALL
             'xdebug.auto_trace': 1,
-            # 'xdebug.collect_assignments': 1,
             'xdebug.collect_params': 3,
+            # 'xdebug.collect_assignments': 1,
             # 'xdebug.collect_return': 1,
             # 'xdebug.collect_vars': 1,
             'xdebug.trace_format': 0,
@@ -241,7 +250,7 @@ class Analyzer(object):
         xdebug, strace = self.php.trace_finish()
         xdebug = filter(lambda L: L.loc.file != self.php.preload,
                         parse_logs(TRACELOG_RE, xdebug))
-        ignore_files = [self.php.preload, '2</dev/pts'] + self.php.logs
+        ignore_files = ['2</dev/pts'] + self.php.logs
         return Trace(self, resp, xdebug, parse_syslog(strace, ignore_files))
 
     def trace(self, url, state=None):
@@ -265,8 +274,8 @@ class Analyzer(object):
         for K, S in state.items():
             for SK, SV in S.items():
                 args = call.args
-                if isinstance(call.args, list):
-                    args = [call.args]
+                if not isinstance(args, list):
+                    args = [args]
                 for arg_val in args:
                     if SV in arg_val:
                         return ' '.join([
@@ -281,7 +290,10 @@ class Analyzer(object):
             if res:
                 if loc is None or loc.file != call.loc.file:
                     loc = call.loc
-                    php_highlights.append(loc.file)
+                    filename = (loc.file
+                                    .replace(self.php.preload, '<preload>')
+                                    .replace(self.php.root, '<webroot>'))
+                    php_highlights.append(filename)
                 php_highlights.append(res)
         php_highlights = filter(None, php_highlights)
         sys_calls = filter(None, [self._scan_call(call, state)
@@ -291,6 +303,7 @@ class Analyzer(object):
         if len(sys_calls):
             print("\nsyscalls:")
             print("\n".join(sys_calls))
+        print()
 
     def run_file(self, filepath):
         webpath = filepath[len(self.php.root):]
