@@ -1,27 +1,26 @@
 #!/usr/bin/env python
 from __future__ import print_function
 import subprocess
-import requests
 import time
 import re
 import os
-import sys
 import logging
 import socket
 from random import randint
 from base64 import b32encode
 from tempfile import mkstemp
 from collections import namedtuple, defaultdict
+import requests
 
 LOG = logging.getLogger(__name__)
 
 PHP_GLOBALS = ['_GET', '_POST', '_COOKIE', '_SERVER', '_REQUEST', '_FILES']
 
-TRACELOG_RE = re.compile('^\s+([0-9\.]+)'+'\s+([0-9]+)'+'\s+(?P<msg>.+?)\s+' +
-                         '(?P<file>/[^:]+)'+':(?P<line>[0-9]+)$', re.MULTILINE)
+TRACELOG_RE = re.compile(r'^\s+([0-9\.]+)\s+([0-9]+)\s+(?P<msg>.+?)\s+' +
+                         r'(?P<file>/[^:]+):(?P<line>[0-9]+)$', re.MULTILINE)
 # Parse function calls in xdebug trace log
-FUNCALL_RE = re.compile('^-> ((?P<cls>[^\-]+)->)?(?P<fnc>[^\s\(]+)' +
-                        '\((?P<args>.*?)\)$')
+FUNCALL_RE = re.compile(r'^-> ((?P<cls>[^\-]+)->)?(?P<fnc>[^\s\(]+)' +
+                        r'\((?P<args>.*?)\)$')
 # Separate agruments to functions, from xdebug trace log
 CALLARGS_RE = re.compile('(?P<args>(^|\s*,\s*)?(' + '(?P<str>' +
                          '(?P<quo>[\'"])' + '(?P<val>(\\.|[^\']+)*)' +
@@ -54,16 +53,16 @@ def unlink(*args):
 
 def snapshot(*files):
     ret = []
-    for file in files:
+    for filename in files:
         data = None
         try:
-            if os.path.exists(file):
-                with open(file, "rw") as fh:
+            if os.path.exists(filename):
+                with open(filename, "w") as fh:
                     data = fh.read()
                     fh.truncate(0)
         except:
             pass
-        unlink(file)
+        unlink(filename)
         ret.append(data)
     return ret
 
@@ -122,6 +121,7 @@ class SyscallTracer(object):
 
     def begin(self):
         self.finish()
+        # TODO: implement dtruss
         cmd = ['strace', '-qyfy', '-s', '4096', '-p', str(self.target.pid)]
         self.logfh = open(self.logfile, "w")
         self.proc = subprocess.Popen(cmd, universal_newlines=True,
@@ -182,7 +182,7 @@ class PHPHarness(object):
         cmd = ['php'] + ["-d %s=%s" % (K, V) for K, V in self.ini.items()]
         cmd += ['-S', ':'.join(self.listen), '-t', self.root] + args
         self.proc = subprocess.Popen(cmd)
-        for N in range(1, 5):
+        for _ in range(1, 5):
             if try_connect(self.listen):
                 break
             if self.proc.poll() is not None:
@@ -302,8 +302,8 @@ class Analyzer(object):
                 if loc is None or loc.file != call.loc.file:
                     loc = call.loc
                     filename = (loc.file
-                                    .replace(self.php.preload, '<preload>')
-                                    .replace(self.php.root, '<webroot>'))
+                                   .replace(self.php.preload, '<preload>')
+                                   .replace(self.php.root, '<webroot>'))
                     php_highlights.append(filename)
                 php_highlights.append(res)
         php_highlights = filter(None, php_highlights)
@@ -342,27 +342,3 @@ class Analyzer(object):
                     state[K][V] = b32encode(os.urandom(randint(1, 4) * 5))
                 new_states = len(newvars) > 0
             self._scan(state, trace, phpcalls, trace.syslog)
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.WARNING)
-
-    port = randint(8192, 50000)
-    root = os.getcwd() + '/tests'
-    self_file = os.path.abspath(sys.modules['__main__'].__file__)
-    preload = os.path.join(os.path.dirname(self_file), '_preload.php')
-
-    server = PHPHarness(('127.0.0.1', str(port)), root, preload)
-    server.start()
-
-    worker = Analyzer(server)
-    try:
-        for path, dirs, files in os.walk(root):
-            php_files = filter(lambda X: os.path.splitext(X)[1] == '.php',
-                               sorted(files))
-            for filename in php_files:
-                worker.run_file(os.path.join(path, filename))
-    except:
-        LOG.exception("FAIL...")
-
-    server.stop()

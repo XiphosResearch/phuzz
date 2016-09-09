@@ -1,7 +1,11 @@
-# PHP Phuzzer
+# PHP Hardening Phuzzer
 
 It uses feedback from xdebug and strace to generate random and arbitrary input
 parameters to a PHP script and find code paths which lead to exploitation.
+
+## TODO
+
+ * [dtrace](https://blogs.oracle.com/opal/entry/tracing_silex_from_php_to) and [systemtap](http://php.net/manual/en/features.dtrace.systemtap.php) support
 
 
 ## Running
@@ -10,13 +14,13 @@ parameters to a PHP script and find code paths which lead to exploitation.
 
 	sudo apt-get install php5.6-cli php-xdebug
 	pip install requests
-	./phuzz.py
+	python -mphuzz
 
 ### OSX
 
     brew install php56 php56-xdebug
     pip install requests
-    ./phuzz.py
+    python -mphuzz
 
 ## Example
 

@@ -1,3 +1,4 @@
 *.xt
 /tests/x/
 /tests/*/*
+*.pyc
