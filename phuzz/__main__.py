@@ -1,3 +1,4 @@
+from __future__ import print_function
 import argparse
 import os
 import logging
@@ -22,32 +23,52 @@ def main(options):
     worker = Analyzer(server)
     stop = False
     try:
-        for path, _, files in os.walk(root):
-            php_files = filter(lambda X: os.path.splitext(X)[1] == '.php',
-                               sorted(files))
-            for filename in php_files:
-                try:
-                    worker.run_file(os.path.join(path, filename))
-                except KeyboardInterrupt:
-                    stop = True
+        if options.files:
+            for filename in options.files:
+                worker.run_file(os.path.realpath(filename))
+        else:
+            # Otherwise traverse document root for files to scan
+            for path, _, files in os.walk(root):
+                php_files = filter(lambda X: os.path.splitext(X)[1] == '.php',
+                                   sorted(files))
+                for filename in php_files:
+                    try:
+                        worker.run_file(os.path.join(path, filename))
+                    except KeyboardInterrupt:
+                        stop = True
+                        break
+                if stop:
                     break
-            if stop:
-                break
     except Exception:
         ret = 1
         LOG.exception("FAIL...")
+
+    if options.wait:
+        print("Waiting at http://" + ':'.join(server.listen))
+        try:
+            server.proc.wait()
+        except KeyboardInterrupt:
+            pass
 
     server.stop()
     return ret
 
 
 def _parse_options():
+    cwd = os.getcwd()
     parser = argparse.ArgumentParser(description='PHP Hardening Phuzzer')
     parser.add_argument(
-        '-t', '--root', type=str, help='Document root', default=os.getcwd())
+        'files', help='Specific files to fuzz', nargs='*')
     parser.add_argument(
-        '-p', '--port', type=int, help='HTTP Server listen port',
+        '-t', '--root', type=str, help='Document root (default: cwd)', default=cwd)
+    parser.add_argument(
+        '-p', '--port', type=int, help='HTTP listen port',
         nargs=1, default=randint(8192, 50000))
+    parser.add_argument(
+        '-w', '--wait',
+        help="Keep the server running after automatic testing",
+        action="store_true", dest="wait", default=False,
+    )
     parser.add_argument(
         '-d', '--debug',
         help="Print lots of debugging statements",

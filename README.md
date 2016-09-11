@@ -1,5 +1,7 @@
 # PHP Hardening Phuzzer
 
+[![Build Status](https://drone.io/github.com/HarryR/phuzz/status.png)](https://drone.io/github.com/HarryR/phuzz/latest)
+
 It uses feedback from xdebug and strace to generate random and arbitrary input
 parameters to a PHP script and find code paths which lead to exploitation.
 

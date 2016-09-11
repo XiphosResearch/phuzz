@@ -1,6 +1,6 @@
 <?php
-if( ! class_exists('_PHPAUDFUZZ') ) {	
-	class _PHPAUDFUZZ extends ArrayObject {
+if( ! class_exists('__PHUZZ') ) {
+	class __PHUZZ extends ArrayObject {
 		protected $name;
 		function __construct($name, $data) {
 			$this->name = $name;
@@ -25,17 +25,17 @@ if( ! class_exists('_PHPAUDFUZZ') ) {
 			//trigger_error("TRACE BEGIN $vars");
 		}
 	}
+class _GET extends __PHUZZ { function offsetGet($k) { return parent::offsetGet($k); } function offsetExists($k) { return parent::offsetExists($k); } }
+class _POST extends __PHUZZ { function offsetGet($k) { return parent::offsetGet($k); } function offsetExists($k) { return parent::offsetExists($k); } }
+class _COOKIE extends __PHUZZ { function offsetGet($k) { return parent::offsetGet($k); } function offsetExists($k) { return parent::offsetExists($k); } }
+class _SERVER extends __PHUZZ { function offsetGet($k) { return parent::offsetGet($k); } function offsetExists($k) { return parent::offsetExists($k); } }
+class _REQUEST extends __PHUZZ { function offsetGet($k) { return parent::offsetGet($k); } function offsetExists($k) { return parent::offsetExists($k); } }
+class _FILES extends __PHUZZ { function offsetGet($k) { return parent::offsetGet($k); } function offsetExists($k) { return parent::offsetExists($k); } }
 }
 date_default_timezone_set('UTC');
 set_time_limit(1);
 $vars = ['_GET', '_POST', '_COOKIE', '_SERVER', '_REQUEST', '_FILES'];
-_PHPAUDFUZZ::begin_request(json_encode(compact($vars)));
-class _GET extends _PHPAUDFUZZ { function offsetGet($k) { return parent::offsetGet($k); } function offsetExists($k) { return parent::offsetExists($k); } }
-class _POST extends _PHPAUDFUZZ { function offsetGet($k) { return parent::offsetGet($k); } function offsetExists($k) { return parent::offsetExists($k); } }
-class _COOKIE extends _PHPAUDFUZZ { function offsetGet($k) { return parent::offsetGet($k); } function offsetExists($k) { return parent::offsetExists($k); } }
-class _SERVER extends _PHPAUDFUZZ { function offsetGet($k) { return parent::offsetGet($k); } function offsetExists($k) { return parent::offsetExists($k); } }
-class _REQUEST extends _PHPAUDFUZZ { function offsetGet($k) { return parent::offsetGet($k); } function offsetExists($k) { return parent::offsetExists($k); } }
-class _FILES extends _PHPAUDFUZZ { function offsetGet($k) { return parent::offsetGet($k); } function offsetExists($k) { return parent::offsetExists($k); } }	
+__PHUZZ::begin_request(json_encode(compact($vars)));
 foreach ( compact($vars) AS $K => $V )
 {
 	$GLOBALS[$K] = new $K($K, $V);

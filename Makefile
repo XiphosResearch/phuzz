@@ -1,7 +1,7 @@
 DKR_TAG=harryr/phuzz
 
 all:
-	./phuzz.py
+	python -mphuzz
 
 build:
 	docker build -t $(DKR_TAG) .

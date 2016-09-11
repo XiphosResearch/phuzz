@@ -21,10 +21,13 @@ TRACELOG_RE = re.compile(r'^\s+([0-9\.]+)\s+([0-9]+)\s+(?P<msg>.+?)\s+' +
 # Parse function calls in xdebug trace log
 FUNCALL_RE = re.compile(r'^-> ((?P<cls>[^\-]+)->)?(?P<fnc>[^\s\(]+)' +
                         r'\((?P<args>.*?)\)$')
+# C-style quoted and escaped string
+CSTRING_RE = (r'(?P<quo>[\'"])' +
+              r'(?P<val>(\\.|[^(?P=quo)]+)*)' +
+              r'(?P=quo)')
 # Separate agruments to functions, from xdebug trace log
-CALLARGS_RE = re.compile('(?P<args>(^|\s*,\s*)?(' + '(?P<str>' +
-                         '(?P<quo>[\'"])' + '(?P<val>(\\.|[^\']+)*)' +
-                         '(?P=quo)' + '|[^,\)]+' + ')))')
+CALLARGS_RE = re.compile(r'(?P<args>(^|\s*,\s*)?(' + r'(?P<str>' + CSTRING_RE +
+                         r'|[^,\)]+' + r')))')
 SYSLOG_RE = re.compile(
     '^(\[[^\]]*\]\s+)?' + '(?P<fun>[^\(]+)' + '\((?P<args>.*?)\)' +
     '\s*=\s*(?P<ret>[^\'" ]+)(\s+[^\'"]+)?$')
@@ -117,13 +120,13 @@ class SyscallTracer(object):
         if os.getuid() != 0 and os.path.exists(yama_ptrace_scope):
             with open(yama_ptrace_scope, 'r') as fh:
                 if fh.read() != "0\n":
-                    print("On Linux, this only works after:")
+                    print("On Linux, this will only work after you run:")
                     print("  echo 0 | sudo tee " + yama_ptrace_scope)
                     raise RuntimeError(yama_ptrace_scope + " must be 0")
 
     def begin(self):
         self.finish()
-        # TODO: implement dtruss
+        # TODO: implement dtruss (OSX) and dtrace (possibly?)
         cmd = ['strace', '-qyfy', '-s', '4096', '-p', str(self.target.pid)]
         self.logfh = open(self.logfile, "w")
         self.proc = subprocess.Popen(cmd, universal_newlines=True,
@@ -152,6 +155,13 @@ class PHPHarness(object):
         if preload:
             ini["auto_prepend_file"] = preload
         self.ini = self._config(ini)
+
+    def translate_path(self, path):
+        if path == self.preload:
+            return '<preload>'
+        if self.root in path:
+            return path.replace(self.root, '<webroot>')
+        return path
 
     def _config(self, extra):
         ini = {
@@ -215,13 +225,12 @@ class PHPHarness(object):
 
 
 class Trace(object):
-    def __init__(self, analyzer, resp, xdebug, syslog):
-        self.analyzer = analyzer
+    __slots__ = ('resp', 'xdebug', 'syslog')
+
+    def __init__(self, resp, xdebug, syslog):
         self.resp = resp
         self.xdebug = xdebug
         self.syslog = syslog
-        self.tags = None
-        # varnames = set([(var.name, var.key) for var in newvars])
 
     def calls(self):
         """Extract all function calls from Xdebug trace entries"""
@@ -242,6 +251,8 @@ class Trace(object):
 
 
 class Analyzer(object):
+    __slots__ = ('php', 'interwebs')
+
     def __init__(self, php):
         self.php = php
         interwebs = requests.Session()
@@ -255,33 +266,25 @@ class Analyzer(object):
         xdebug = filter(lambda L: L.loc.file != self.php.preload,
                         parse_logs(TRACELOG_RE, xdebug))
         ignore_files = ['2</dev/pts'] + self.php.logs
-        return Trace(self, resp, xdebug, parse_syslog(strace, ignore_files))
+        return Trace(resp, xdebug, parse_syslog(strace, ignore_files))
 
-    def trace(self, url, state=None):
-        # TODO: handle POST, cookies, files etc.
-        if state is None:
-            state = defaultdict(dict)
+    def _request_for_state(self, url, state):
         params = state['_REQUEST']
         params.update(state['_GET'])
+        method = state.get('METHOD', 'POST' if any(['_POST' in state, '_FILES' in state]) else 'GET')
+        return self.interwebs.request(method, url, params=params,
+                                cookies=state['_COOKIE'],
+                                allow_redirects=False)
+
+    def trace(self, url, state=None):
+        if state is None:
+            state = defaultdict(dict)
         LOG.debug('Retrieving %r', url)
         self.php.trace_begin()
-        if '_POST' not in state and '_FILES' not in state:
-            resp = self.interwebs.get(url, params=params,
-                                      cookies=state['_COOKIE'],
-                                      allow_redirects=False)
-        else:
-            if '_FILES' not in state:
-                resp = self.interwebs.post(url, params=params, 
-                                           data=state['_POST'],
-                                           cookies=state['_COOKIE'],
-                                           allow_redirects=False)
-            else:
-                print('Requires _FILES, skipping!')
-                resp = None
+        resp = self._request_for_state(url, state)
         if resp:
             return self._collect(resp)
-        else:
-            self.php.trace_finish()
+        self.php.trace_finish()
 
     def _scan_call(self, call, state):
         if call.fun[0] in PHP_GLOBALS:
@@ -305,10 +308,7 @@ class Analyzer(object):
             if res:
                 if loc is None or loc.file != call.loc.file:
                     loc = call.loc
-                    filename = (loc.file
-                                   .replace(self.php.preload, '<preload>')
-                                   .replace(self.php.root, '<webroot>'))
-                    php_highlights.append(filename)
+                    php_highlights.append(self.php.translate_path(loc.file))
                 php_highlights.append(res)
         php_highlights = filter(None, php_highlights)
         sys_calls = filter(None, [self._scan_call(call, state)
@@ -322,9 +322,14 @@ class Analyzer(object):
 
     def run_file(self, filepath):
         webpath = filepath[len(self.php.root):]
+        if webpath is None:
+            raise RuntimeError("Path not under document root!")
+        return self.run_path(webpath)
+
+    def run_path(self, webpath):
         server = ':'.join([self.php.listen[0], str(self.php.listen[1])])
         url = "http://%s%s" % (server, webpath)
-        self.run(url)
+        return self.run(url)
 
     def run(self, url, state=None):
         if state is None:
