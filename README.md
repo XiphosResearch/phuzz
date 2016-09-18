@@ -7,6 +7,7 @@ parameters to a PHP script and find code paths which lead to exploitation.
 
 ## TODO
 
+ * Make it suck less
  * Analysis of collected Phuzz cases/traces, automatic exploit generation
  * [dtrace](https://blogs.oracle.com/opal/entry/tracing_silex_from_php_to) and [systemtap](http://php.net/manual/en/features.dtrace.systemtap.php) support
 
