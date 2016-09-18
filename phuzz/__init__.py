@@ -285,7 +285,7 @@ class Trace(object):
 
 class CaseManager(object):
     def __init__(self, output_dir):
-        self.output = output_dir
+        self.output_dir = output_dir
 
     def _is_interesting(self, case):
         for _, trace in case.traces.items():
@@ -338,12 +338,13 @@ class CaseManager(object):
     def ingest(self, case):
         if not self._is_interesting(case):
             return False
-        digest = self._hash_traces(case.traces)
-        filename = os.path.join(self.output, digest + '.phuzz')
-        if not os.path.exists(filename):
-            with open(filename, 'wb') as handle:
-                pickle.dump(case, handle)
         self._display(case)
+        if self.output_dir:
+            digest = self._hash_traces(case.traces)
+            filename = os.path.join(self.output_dir, digest + '.phuzz')
+            if not os.path.exists(filename):
+                with open(filename, 'wb') as handle:
+                    pickle.dump(case, handle)
 
 class Phuzzer(object):
     __slots__ = ('php', 'interwebs', 'manager')
@@ -416,14 +417,18 @@ class Phuzzer(object):
 
     def run_path(self, webpath):
         server = ':'.join([self.php.listen[0], str(self.php.listen[1])])
-        url = "http://%s/%s" % (server, webpath)
+        if len(webpath) and webpath[0] != '/':
+            webpath = '/' + webpath
+        url = ''.join(['http://', server, webpath])
         return self.run(url)
 
     def run(self, url, state=None):
         if state is None:
             state = defaultdict(dict)
         new_states = True
-        while new_states:
+        escape = 100  # Avoid infinite loops
+        while new_states and escape > 0:
+            escape -= 1
             new_states = False
             trace = self.trace(url, state)
             if not trace:
@@ -431,6 +436,7 @@ class Phuzzer(object):
             phpcalls = trace.calls()
             input_vars = calls_scan_vars(phpcalls)
             if len(input_vars):
+                # TODO: permute through each of variables?
                 newvars = set([(entry.name, entry.key)
                                for entry in input_vars
                                if entry.name not in state

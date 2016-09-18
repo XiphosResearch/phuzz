@@ -24,11 +24,11 @@ def main(options):
         worker = Phuzzer(server, manager)
         if options.files:
             for filename in options.files:
-                path = os.path.realpath(filename)
-                if not os.path.exists(path):
-                    LOG.warning('Cannot find file: %r', filename)
-                    continue
-                worker.run_file(path)
+                realpath = os.path.realpath(filename)
+                if os.path.exists(realpath):
+                    worker.run_file(realpath)
+                else:
+                    worker.run_path(filename)
         else:
             LOG.info('Scanning all files in %s', root)
             stop = False
@@ -60,19 +60,20 @@ def main(options):
 
 def _parse_options():
     tests_dir = os.path.join(os.getcwd(), 'tests')
-    out_dir = os.path.join(os.getcwd(), 'output')
     parser = argparse.ArgumentParser(description='PHP Hardening Phuzzer')
     parser.add_argument(
-        'files', help='Specific files to fuzz', nargs='*')
+        'files',
+        help='Specific files to fuzz', nargs='*')
     parser.add_argument(
-        '-o', '--out', type=str, help='Output directory (default: output)',
-        default=out_dir)
+        '-o', '--out',
+        type=str, help='Output dir for .phuzz trace files')
     parser.add_argument(
-        '-t', '--root', type=str, help='Document root (default: cwd)',
-        default=tests_dir)
+        '-t', '--root',
+        type=str, help='Document root (default: cwd)', default=tests_dir)
     parser.add_argument(
-        '-p', '--port', type=int, help='HTTP listen port',
-        nargs=1, default=randint(8192, 50000))
+        '-p', '--port',
+        type=int, nargs=1, default=randint(8192, 50000),
+        help='HTTP listen port (default: random)')
     parser.add_argument(
         '-w', '--wait',
         help="Keep the server running after automatic testing",
