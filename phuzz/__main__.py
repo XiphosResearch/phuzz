@@ -65,10 +65,10 @@ def _parse_options():
     parser.add_argument(
         'files', help='Specific files to fuzz', nargs='*')
     parser.add_argument(
-        '-o', '--out', type=str, help='Document root (default: cwd)',
+        '-o', '--out', type=str, help='Output directory (default: output)',
         default=out_dir)
     parser.add_argument(
-        '-t', '--root', type=str, help='Output directory (default: output)',
+        '-t', '--root', type=str, help='Document root (default: cwd)',
         default=tests_dir)
     parser.add_argument(
         '-p', '--port', type=int, help='HTTP listen port',
