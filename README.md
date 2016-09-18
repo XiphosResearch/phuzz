@@ -7,22 +7,9 @@ parameters to a PHP script and find code paths which lead to exploitation.
 
 ## TODO
 
+ * Analysis of collected Phuzz cases/traces, automatic exploit generation
  * [dtrace](https://blogs.oracle.com/opal/entry/tracing_silex_from_php_to) and [systemtap](http://php.net/manual/en/features.dtrace.systemtap.php) support
 
-
-## Running
-
-### Debian / Ubuntu
-
-	sudo apt-get install php5.6-cli php-xdebug
-	pip install requests
-	python -mphuzz
-
-### OSX
-
-    brew install php56 php56-xdebug
-    pip install requests
-    python -mphuzz
 
 ## Example
 
@@ -46,3 +33,36 @@ PHP and system calls that.
 		 stat ( "/bin/SWGAGI55", 0x7ffff9f76140 )
 		 stat ( "/usr/games/SWGAGI55", 0x7ffff9f76140 )
 		 stat ( "/usr/local/games/SWGAGI55", 0x7ffff9f76140 )
+
+## Installation
+
+### Debian / Ubuntu
+
+	sudo apt-get install php5.6-cli php-xdebug
+	pip install -r requirements.txt
+	python -mphuzz
+
+### OSX
+
+    brew install php56 php56-xdebug
+    pip install -r requirements.txt
+    python -mphuzz
+
+### Microsoft Windows (XP or above)
+
+  * Click on `Start` button (bottom left hand corner of screen)
+  * Click `My Computer`
+  * Navigate to `C:\Program Files\Microsoft Internet Explorer Professional Edition 2016\`
+  * Locate `iexplore.exe`, you may have to use the scroll bars
+  * Click on it... twice, quickly!
+  * Wait until new window opens up
+  * Find the white bar with `http://worldwideweb.msn.com/en-US/` in it
+  * Click the text, just once!
+  * Press the `Ctrl` and `A` buttons on your keyboard, together, at the same time.
+  * Type in `www.google.com`
+  * Wait until your computer starts responding again
+  * Type in `Self immoliation techniques for beginners`
+  * Press the `Search` button
+  * Follow instructions until warm throughout
+
+TL;DR any ideas on porting this to Win32 API?
