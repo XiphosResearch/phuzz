@@ -53,7 +53,7 @@ PHP and system calls that.
 
   * Click on `Start` button (bottom left hand corner of screen)
   * Click `My Computer`
-  * Navigate to `C:\Program Files\Microsoft Internet Explorer Professional Edition 2016\`
+  * Navigate to `C:\Program Files (Intel X86 Architecture)\Microsoft Internet Explorer Professional Edition 2016\`
   * Locate `iexplore.exe`, you may have to use the scroll bars
   * Click on it... twice, quickly!
   * Wait until new window opens up
