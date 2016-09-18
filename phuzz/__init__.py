@@ -416,7 +416,7 @@ class Phuzzer(object):
 
     def run_path(self, webpath):
         server = ':'.join([self.php.listen[0], str(self.php.listen[1])])
-        url = "http://%s%s" % (server, webpath)
+        url = "http://%s/%s" % (server, webpath)
         return self.run(url)
 
     def run(self, url, state=None):
