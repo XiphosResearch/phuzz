@@ -57,7 +57,7 @@ PHP and system calls that.
   * Locate `iexplore.exe`, you may have to use the scroll bars
   * Click on it... twice, quickly!
   * Wait until new window opens up
-  * Find the white bar with `http://worldwideweb.msn.com/en-US/` in it
+  * Find the white bar with `http://worldwideweb.msn.com/en-US/infestedmalwaresmegma.exe` in it
   * Click the text, just once!
   * Press the `Ctrl` and `A` buttons on your keyboard, together, at the same time.
   * Type in `www.google.com`
