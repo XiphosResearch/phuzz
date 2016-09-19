@@ -34,6 +34,10 @@ STRACE_RE = re.compile(
     r'^(\[[^\]]*\]\s+)?' + r'(?P<fun>[^\(]+)' + r'\((?P<args>.*?)\)' +
     r'\s*=\s*(?P<ret>[^\'" ]+)(\s+[^\'"]+)?$')
 
+DTRUSS_RE = re.compile(
+    r'[^:]+\s*' + r'(?P<fun>[^\(]+)' + r'\((?P<args>.*?)\)' +
+    r'\s*=\s*(?P<ret>[^\'" ]+)(\s+[^\'"]+)?$')
+
 
 Loc = namedtuple('Loc', ['file', 'line'])
 LogMessage = namedtuple('LogMessage', ['msg', 'loc'])
@@ -131,34 +135,62 @@ class SyscallTracer(object):
         self.logfile = mkstemp('strace')[1]
         self.logfh = None
         self.cmd = None
+        self.regex = None
         self._setup()
 
+    def _wait_for_logfile(self):
+        while True:
+            if os.path.getsize(self.logfile) > 20:
+                break
+            time.sleep(1)
+            LOG.info('Waiting for system call tracer to start...')
+
     def _setup(self):
-        # TODO: implement dtruss, dtrace, systemtap etc.
-        self.cmd = ' '.join([
-            'exec', 'strace', '-qyfy', '-s', '4096',
-            '-p', str(self.target.pid), '2>', self.logfile
-        ])
-        yama_ptrace_scope = '/proc/sys/kernel/yama/ptrace_scope'
-        if os.getuid() != 0 and os.path.exists(yama_ptrace_scope):
-            with open(yama_ptrace_scope, 'r') as handle:
-                if handle.read() != "0\n":
-                    print("On Linux, this will only work after you run:")
-                    print("  echo 0 | sudo tee " + yama_ptrace_scope)
-                    raise RuntimeError(yama_ptrace_scope + " must be 0")
+        # TODO: implement dtrace, systemtap etc.
+        LOG.debug('SyscallTracer logging to %s', self.logfile)
+        try:  # First try strace...
+            subprocess.check_call(['which', 'strace'])
+            self.cmd = ' '.join([
+                'exec', 'strace', '-qyfy', '-s', '4096',
+                '-p', str(self.target.pid), '2>', self.logfile
+            ])
+            self.regex = STRACE_RE
+            yama_ptrace_scope = '/proc/sys/kernel/yama/ptrace_scope'
+            if os.getuid() != 0 and os.path.exists(yama_ptrace_scope):
+                with open(yama_ptrace_scope, 'r') as handle:
+                    if handle.read() != "0\n":
+                        print("On Linux, this may only work after you run:")
+                        print("  echo 0 | sudo tee " + yama_ptrace_scope)
+                        raise RuntimeError(yama_ptrace_scope + " must be 0")
+        except subprocess.CalledProcessError:
+            try:  # Nope? How about dtruss? (for OSX...)
+                subprocess.check_call(['which', 'dtruss'])
+                self.cmd = ' '.join([
+                    'exec', 'sudo',  # Requires sudo, non-elegant
+                    'dtruss', '-f', '-p', str(self.target.pid),
+                    '2>', self.logfile,
+                ])
+                self.regex = DTRUSS_RE
+            except subprocess.CalledProcessError:
+                LOG.warning('Unable to find a system call tracer!')
 
     def start(self):
         self.stop()
         self.logfh = open(self.logfile, "w")
-        self.proc = subprocess.Popen(self.cmd, universal_newlines=True, shell=True)
+        self.proc = subprocess.Popen(self.cmd, universal_newlines=True,
+                                     shell=True)
         if self.proc.poll() is not None:
             raise RuntimeError("Could not strace: " + str(self.cmd))
+        self._wait_for_logfile()
         LOG.info('SyscallTracer started, pid: %r', self.proc.pid)
 
     def stop(self):
         if self.proc:
             LOG.debug('SyscallTracer stopped, pid: %r', self.proc.pid)
-            self.proc.terminate()
+            try:
+                self.proc.terminate()
+            except OSError:
+                pass  # When the traced process dies, so will the tracer...
             self.proc = None
         if self.logfh:
             self.logfh.close()
@@ -345,6 +377,7 @@ class CaseManager(object):
             if not os.path.exists(filename):
                 with open(filename, 'wb') as handle:
                     pickle.dump(case, handle)
+
 
 class Phuzzer(object):
     __slots__ = ('php', 'interwebs', 'manager')
