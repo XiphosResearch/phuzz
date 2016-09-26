@@ -460,7 +460,6 @@ class Phuzzer(object):
             resp = self._request_for_state(url, state)
         if timeout_ctx.state:
             LOG.warning('Timeout exceeded for %r', url)
-        self.php.trace_finish(self._ignored_files())
         trace = self._collect(resp)
         if timeout_ctx.state:
             self.php.stop()
