@@ -12,9 +12,11 @@ from random import randint
 from base64 import b32encode
 from tempfile import mkstemp
 from collections import namedtuple, defaultdict
+from stopit import SignalTimeout as Timeout
 import requests
 
 LOG = logging.getLogger(__name__)
+logging.getLogger("stopit").setLevel(logging.ERROR)
 
 PHP_GLOBALS = ['_GET', '_POST', '_COOKIE', '_SERVER', '_REQUEST', '_FILES']
 
@@ -141,7 +143,7 @@ class SyscallTracer(object):
         self.sudo_kill = False
         self._setup()
 
-    def _wait_for_logfile(self, escape=10):
+    def _wait_for_logfile(self, escape=5):
         while escape > 0:
             escape -= 1
             if os.path.getsize(self.logfile) > 20:
@@ -284,6 +286,9 @@ class PHPHarness(object):
             if mod not in mods:
                 raise RuntimeError("Error: php doesn't have the module:", mod)
 
+    def running(self):
+        return self.proc is not None
+
     def start(self, args=None):
         if args is None:
             args = []
@@ -304,6 +309,7 @@ class PHPHarness(object):
         if self.proc:
             self.proc.terminate()
             wait_for_proc_death(self.proc)
+            LOG.debug('PHP stopped')
             self.proc = None
         if self.strace:
             self.strace.stop()
@@ -412,9 +418,10 @@ class CaseManager(object):
 
 
 class Phuzzer(object):
-    __slots__ = ('php', 'interwebs', 'manager')
+    __slots__ = ('options', 'php', 'interwebs', 'manager')
 
-    def __init__(self, php, manager):
+    def __init__(self, options, php, manager):
+        self.options = options
         self.php = php
         self.manager = manager
         interwebs = requests.Session()
@@ -444,12 +451,19 @@ class Phuzzer(object):
     def trace(self, url, state=None):
         if state is None:
             state = defaultdict(dict)
+        if not self.php.running():
+            self.php.start()
         LOG.debug('Retrieving %r', url)
+        resp = None
         self.php.trace_begin()
-        resp = self._request_for_state(url, state)
-        if resp:
-            return self._collect(resp)
-        self.php.trace_finish(self._ignored_files())
+        with Timeout(self.options.timeout) as timeout_ctx:
+            resp = self._request_for_state(url, state)
+        if timeout_ctx.state:
+            LOG.warning('Timeout exceeded for %r', url)
+        trace = self._collect(resp)
+        if timeout_ctx.state:
+            self.php.stop()
+        return trace
 
     def _scan_calls(self, calls, state):
         return [(self._scan_call(call, state), call)
