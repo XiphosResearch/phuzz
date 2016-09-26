@@ -71,7 +71,7 @@ PHP and system calls that.
   * Press the `Ctrl` and `A` buttons on your keyboard, together, at the same time.
   * Type in `www.google.com`
   * Wait until your computer starts responding again
-  * Type in `Self immoliation techniques for beginners`
+  * Type in `Self immolation techniques for beginners`
   * Press the `Search` button
   * Follow instructions until warm throughout
 
