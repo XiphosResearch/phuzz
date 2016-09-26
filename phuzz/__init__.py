@@ -34,12 +34,24 @@ STRACE_RE = re.compile(
     r'^(\[[^\]]*\]\s+)?' + r'(?P<fun>[^\(]+)' + r'\((?P<args>.*?)\)' +
     r'\s*=\s*(?P<ret>[^\'" ]+)(\s+[^\'"]+)?$')
 
+DTRUSS_RE = re.compile(
+    r'[^:]+:\s*' + r'(?P<fun>[^\(]+)' + r'\((?P<args>.*?)\)' +
+    r'\s*=\s*(?P<ret>[^\'" ]+)(\s+[^\'"]+)?$')
+
 
 Loc = namedtuple('Loc', ['file', 'line'])
 LogMessage = namedtuple('LogMessage', ['msg', 'loc'])
 Var = namedtuple('Var', ['name', 'key', 'value', 'loc'])
 Func = namedtuple('Func', ['fun', 'args', 'loc'])
 PhuzzCase = namedtuple('PhuzzCase', ['url', 'root', 'state', 'traces'])
+
+
+def which(program):
+    try:
+        ret = subprocess.check_output(['which', program])
+    except subprocess.CalledProcessError:
+        return None
+    return ret
 
 
 def unescape(data):
@@ -83,25 +95,19 @@ def try_connect(addr):
         return False
 
 
+def wait_for_proc_death(proc):
+    while True:
+        if proc.poll() is not None:
+            break
+        LOG.debug('Waiting for process to stop: %r', proc.pid)
+        time.sleep(0.5)
+
+
 def parse_logs(regex, data):
     return [] if not data else [
         LogMessage(match.group('msg'),
                    Loc(match.group('file'), match.group('line')))
         for match in regex.finditer(data)]
-
-
-def parse_strace(data, ignore_files=None):
-    ret = []
-    if not data:
-        return ret
-    for entry in data.split("\n"):
-        match = STRACE_RE.match(entry)
-        if match:
-            mdat = match.groupdict()
-            ignored = [X in mdat['args'] for X in ignore_files]
-            if not any(ignored):
-                ret.append(Func([mdat['fun']], mdat['args'], None))
-    return ret
 
 
 def calls_scan_vars(entries):
@@ -131,44 +137,101 @@ class SyscallTracer(object):
         self.logfile = mkstemp('strace')[1]
         self.logfh = None
         self.cmd = None
+        self.regex = None
+        self.sudo_kill = False
         self._setup()
 
+    def _wait_for_logfile(self, escape=10):
+        while escape > 0:
+            escape -= 1
+            if os.path.getsize(self.logfile) > 20:
+                return True
+            try:
+                time.sleep(1)
+            except KeyboardInterrupt:
+                return False
+            LOG.debug('Waiting for system call trace log...')
+        return False
+
     def _setup(self):
-        # TODO: implement dtruss, dtrace, systemtap etc.
-        self.cmd = ' '.join([
-            'exec', 'strace', '-qyfy', '-s', '4096',
-            '-p', str(self.target.pid), '2>', self.logfile
-        ])
-        yama_ptrace_scope = '/proc/sys/kernel/yama/ptrace_scope'
-        if os.getuid() != 0 and os.path.exists(yama_ptrace_scope):
-            with open(yama_ptrace_scope, 'r') as handle:
-                if handle.read() != "0\n":
-                    print("On Linux, this will only work after you run:")
-                    print("  echo 0 | sudo tee " + yama_ptrace_scope)
-                    raise RuntimeError(yama_ptrace_scope + " must be 0")
+        # TODO: implement dtrace, systemtap etc.
+        LOG.debug('SyscallTracer logging to %s', self.logfile)
+        if which('strace'):  # First try strace...
+            self.cmd = ' '.join([
+                'exec', 'strace', '-qyfy', '-s', '4096',
+                '-p', str(self.target.pid), '2>', self.logfile
+            ])
+            self.regex = STRACE_RE
+            yama_ptrace_scope = '/proc/sys/kernel/yama/ptrace_scope'
+            if os.getuid() != 0 and os.path.exists(yama_ptrace_scope):
+                with open(yama_ptrace_scope, 'r') as handle:
+                    if handle.read() != "0\n":
+                        print("On Linux, this may only work after you run:")
+                        print("  echo 0 | sudo tee " + yama_ptrace_scope)
+                        raise RuntimeError(yama_ptrace_scope + " must be 0")
+        elif which('dtruss'):
+            self.cmd = ' '.join([
+                'exec', 'sudo', '-s', 'exec',  # Requires sudo, !elegant
+                'dtruss', '-b', '32m', '-f', '-p', str(self.target.pid),
+                '&>', self.logfile,
+            ])
+            self.sudo_kill = True
+            self.regex = DTRUSS_RE
+        else:
+            LOG.warning('Unable to find a system call tracer!')
+
+    def _parse_strace(self, data, ignore_files=None):
+        ret = []
+        if not data:
+            return ret
+        for entry in data.split("\n"):
+            match = self.regex.match(entry)
+            if match:
+                mdat = match.groupdict()
+                if mdat['fun'] == 'write_nocancel':
+                    if mdat['args'][:4] in ['0x5,', '0x2,']:
+                        # XXX: on OSX, explicitly ignore console & error log
+                        continue
+                ignored = [X in mdat['args'] for X in ignore_files]
+                if not any(ignored):
+                    ret.append(Func([mdat['fun']], mdat['args'], None))
+        return ret
 
     def start(self):
         self.stop()
         self.logfh = open(self.logfile, "w")
-        self.proc = subprocess.Popen(self.cmd, universal_newlines=True, shell=True)
+        self.proc = subprocess.Popen(self.cmd, universal_newlines=True,
+                                     shell=True, preexec_fn=os.setsid)
         if self.proc.poll() is not None:
-            raise RuntimeError("Could not strace: " + str(self.cmd))
+            raise RuntimeError("Could not syscall trace: " + str(self.cmd))
+        if not self._wait_for_logfile():
+            raise RuntimeError("syscall trace log not filling!")
         LOG.info('SyscallTracer started, pid: %r', self.proc.pid)
 
     def stop(self):
         if self.proc:
+            try:
+                self.proc.terminate()
+            except OSError:
+                if self.sudo_kill:
+                    pgrp = os.getpgid(self.proc.pid)
+                    subprocess.check_call([
+                        'sudo', 'pkill', '-TERM', '-g', str(pgrp)
+                    ])
+            wait_for_proc_death(self.proc)
             LOG.debug('SyscallTracer stopped, pid: %r', self.proc.pid)
-            self.proc.terminate()
             self.proc = None
         if self.logfh:
             self.logfh.close()
             self.logfh = None
 
     def reset(self):
-        self.logfh.truncate(0)
+        snapshot(*(self.logfile,), remove=False)
 
-    def snapshot(self):
-        return snapshot(*(self.logfile,), remove=False)[0]
+    def snapshot(self, ignore_files):
+        self._wait_for_logfile()
+        data = snapshot(*(self.logfile,), remove=False)[0]
+        return self._parse_strace(data, ignore_files)
 
 
 class PHPHarness(object):
@@ -240,6 +303,7 @@ class PHPHarness(object):
     def stop(self):
         if self.proc:
             self.proc.terminate()
+            wait_for_proc_death(self.proc)
             self.proc = None
         if self.strace:
             self.strace.stop()
@@ -250,9 +314,9 @@ class PHPHarness(object):
         snapshot(*self.logs)
         self.strace.reset()
 
-    def trace_finish(self):
+    def trace_finish(self, ignore_files):
         logdata = snapshot(*self.logs)
-        strace_out = self.strace.snapshot()
+        strace_out = self.strace.snapshot(ignore_files)
         logdata.append(strace_out)
         return logdata
 
@@ -346,6 +410,7 @@ class CaseManager(object):
                 with open(filename, 'wb') as handle:
                     pickle.dump(case, handle)
 
+
 class Phuzzer(object):
     __slots__ = ('php', 'interwebs', 'manager')
 
@@ -358,12 +423,14 @@ class Phuzzer(object):
         interwebs.danger_mode = True  # Yay danger!
         self.interwebs = interwebs
 
+    def _ignored_files(self):
+        return ['2</dev/pts'] + self.php.logs
+
     def _collect(self, resp):
-        xdebug, strace = self.php.trace_finish()
+        xdebug, strace = self.php.trace_finish(self._ignored_files())
         xdebug = filter(lambda L: L.loc.file != self.php.preload,
                         parse_logs(TRACELOG_RE, xdebug))
-        ignore_files = ['2</dev/pts'] + self.php.logs
-        return Trace(resp, xdebug, parse_strace(strace, ignore_files))
+        return Trace(resp, xdebug, strace)
 
     def _request_for_state(self, url, state):
         params = state['_REQUEST']
@@ -382,7 +449,7 @@ class Phuzzer(object):
         resp = self._request_for_state(url, state)
         if resp:
             return self._collect(resp)
-        self.php.trace_finish()
+        self.php.trace_finish(self._ignored_files())
 
     def _scan_calls(self, calls, state):
         return [(self._scan_call(call, state), call)
