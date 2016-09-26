@@ -35,7 +35,7 @@ STRACE_RE = re.compile(
     r'\s*=\s*(?P<ret>[^\'" ]+)(\s+[^\'"]+)?$')
 
 DTRUSS_RE = re.compile(
-    r'[^:]+\s*' + r'(?P<fun>[^\(]+)' + r'\((?P<args>.*?)\)' +
+    r'[^:]+:\s*' + r'(?P<fun>[^\(]+)' + r'\((?P<args>.*?)\)' +
     r'\s*=\s*(?P<ret>[^\'" ]+)(\s+[^\'"]+)?$')
 
 
@@ -141,12 +141,17 @@ class SyscallTracer(object):
         self.sudo_kill = False
         self._setup()
 
-    def _wait_for_logfile(self):
-        while True:
+    def _wait_for_logfile(self, escape=10):
+        while escape > 0:
+            escape -= 1
             if os.path.getsize(self.logfile) > 20:
-                break
-            time.sleep(1)
-            LOG.debug('Waiting for system call tracer to start...')
+                return True
+            try:
+                time.sleep(1)
+            except KeyboardInterrupt:
+                return False
+            LOG.debug('Waiting for system call trace log...')
+        return False
 
     def _setup(self):
         # TODO: implement dtrace, systemtap etc.
@@ -166,9 +171,9 @@ class SyscallTracer(object):
                         raise RuntimeError(yama_ptrace_scope + " must be 0")
         elif which('dtruss'):
             self.cmd = ' '.join([
-                'exec', 'sudo',  '-s', 'exec',  # Requires sudo, !elegant
-                'dtruss', '-f', '-p', str(self.target.pid),
-                '2>', self.logfile,
+                'exec', 'sudo', '-s', 'exec',  # Requires sudo, !elegant
+                'dtruss', '-b', '32m', '-f', '-p', str(self.target.pid),
+                '&>', self.logfile,
             ])
             self.sudo_kill = True
             self.regex = DTRUSS_RE
@@ -183,6 +188,10 @@ class SyscallTracer(object):
             match = self.regex.match(entry)
             if match:
                 mdat = match.groupdict()
+                if mdat['fun'] == 'write_nocancel':
+                    if mdat['args'][:4] in ['0x5,', '0x2,']:
+                        # XXX: on OSX, explicitly ignore console & error log
+                        continue
                 ignored = [X in mdat['args'] for X in ignore_files]
                 if not any(ignored):
                     ret.append(Func([mdat['fun']], mdat['args'], None))
@@ -194,8 +203,9 @@ class SyscallTracer(object):
         self.proc = subprocess.Popen(self.cmd, universal_newlines=True,
                                      shell=True, preexec_fn=os.setsid)
         if self.proc.poll() is not None:
-            raise RuntimeError("Could not strace: " + str(self.cmd))
-        self._wait_for_logfile()
+            raise RuntimeError("Could not syscall trace: " + str(self.cmd))
+        if not self._wait_for_logfile():
+            raise RuntimeError("syscall trace log not filling!")
         LOG.info('SyscallTracer started, pid: %r', self.proc.pid)
 
     def stop(self):
@@ -216,9 +226,10 @@ class SyscallTracer(object):
             self.logfh = None
 
     def reset(self):
-        self.logfh.truncate(0)
+        snapshot(*(self.logfile,), remove=False)
 
     def snapshot(self, ignore_files):
+        self._wait_for_logfile()
         data = snapshot(*(self.logfile,), remove=False)[0]
         return self._parse_strace(data, ignore_files)
 
