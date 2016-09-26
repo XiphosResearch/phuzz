@@ -6,6 +6,14 @@ It uses feedback from xdebug and strace to generate random and arbitrary input
 parameters to a PHP script and find code paths which lead to exploitation. Primarily it's designed 
 to scan for vulnerabilities in PHP scripts which are web accessible but not meant to be run directly.
 
+## Features
+
+ * Detect input parameters, _GET, _POST, _REQUEST, _COOKIE and _FILES
+ * Generate random input parameters
+ * Find unique code paths
+ * systemcall tracing with strace and dtruss, tested on Linux & OSX
+ * PHP function call tracing, using Xdebug
+
 ## TODO
 
  * Make it suck less
@@ -68,3 +76,4 @@ PHP and system calls that.
   * Follow instructions until warm throughout
 
 TL;DR any ideas on porting this to Win32 API?
+
