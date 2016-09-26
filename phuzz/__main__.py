@@ -21,7 +21,7 @@ def main(options):
     manager = CaseManager(options.out)
 
     try:
-        worker = Phuzzer(server, manager)
+        worker = Phuzzer(options, server, manager)
         if options.files:
             for filename in options.files:
                 realpath = os.path.realpath(filename)
@@ -68,8 +68,12 @@ def _parse_options():
         '-o', '--out',
         type=str, help='Output dir for .phuzz trace files')
     parser.add_argument(
-        '-t', '--root',
+        '-r', '--root',
         type=str, help='Document root (default: cwd)', default=tests_dir)
+    parser.add_argument(
+        '-t', '--timeout',
+        type=int, default=5,
+        help='Maximum execution time for PHP scripts')
     parser.add_argument(
         '-p', '--port',
         type=int, nargs=1, default=randint(8192, 50000),
