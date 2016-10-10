@@ -269,6 +269,7 @@ class PHPHarness(object):
             'error_reporting': 32767,  # E_ALL
             'xdebug.auto_trace': 1,
             'xdebug.collect_params': 3,
+            'xdebug.collect_includes': 1,
             # 'xdebug.collect_assignments': 1,
             # 'xdebug.collect_return': 1,
             # 'xdebug.collect_vars': 1,
@@ -444,16 +445,19 @@ class Phuzzer(object):
         params.update(state['_GET'])
         needs_post = any(['_POST' in state, '_FILES' in state])
         method = state.get('METHOD', 'POST' if needs_post else 'GET')
+        files = None
+        data = state.get('_POST') if needs_post else None
+        LOG.info('%r %r %r', method, url, state)
         return self.interwebs.request(method, url, params=params,
                                       cookies=state['_COOKIE'],
+                                      data=data, files=files,
                                       allow_redirects=False)
 
     def trace(self, url, state=None):
         if state is None:
             state = defaultdict(dict)
         if not self.php.running():
-            self.php.start()
-        LOG.debug('Retrieving %r', url)
+            self.php.start()        
         resp = None
         self.php.trace_begin()
         with Timeout(self.options.timeout) as timeout_ctx:
@@ -522,6 +526,8 @@ class Phuzzer(object):
                                for entry in input_vars
                                if entry.name not in state
                                or entry.key not in state[entry.name]])
+                if len(newvars):
+                    LOG.debug('Discovered new inputs: %r', newvars)
                 for key, val in newvars:
                     state[key][val] = b32encode(os.urandom(randint(1, 4) * 5))
                 new_states = len(newvars) > 0

@@ -32,8 +32,6 @@ class _SERVER extends __PHUZZ { function offsetGet($k) { return parent::offsetGe
 class _REQUEST extends __PHUZZ { function offsetGet($k) { return parent::offsetGet($k); } function offsetExists($k) { return parent::offsetExists($k); } }
 class _FILES extends __PHUZZ { function offsetGet($k) { return parent::offsetGet($k); } function offsetExists($k) { return parent::offsetExists($k); } }
 }
-date_default_timezone_set('UTC');
-set_time_limit(1);
 $vars = ['_GET', '_POST', '_COOKIE', '_SERVER', '_REQUEST', '_FILES'];
 __PHUZZ::begin_request(json_encode(compact($vars)));
 foreach ( compact($vars) AS $K => $V )
