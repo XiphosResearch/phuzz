@@ -50,6 +50,7 @@ PHP and system calls that.
 
 	sudo apt-get install php5.6-cli php-xdebug
 	pip install -r requirements.txt
+  sudo sh -c 'echo 0 > /proc/sys/kernel/yama/ptrace_scope'
 	python -mphuzz
 
 ### OSX
